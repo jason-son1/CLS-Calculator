@@ -565,14 +565,20 @@
               <label class="field-label" style="margin:0;">Flat-band Energy E₀</label>
               <input type="number" id="eng-e0" value="0.0" step="0.1" class="lat-select" style="width: 80px; text-align: center; font-size: 0.8rem; padding: 3px;">
 
-              <label class="field-label" style="margin:0;">Dispersive t</label>
-              <input type="number" id="eng-disp-t" value="0.3" step="0.05" class="lat-select" style="width: 80px; text-align: center; font-size: 0.8rem; padding: 3px;">
+              <label class="field-label" style="margin:0;" title="H(k) = E0 I + α·H_core(k) + H_core(k) M̃(k) H_core(k). α는 dispersive_shape='none'일 때 분산 밴드 폭을 직접 스케일합니다.">α (분산밴드 폭 스케일)</label>
+              <input type="number" id="eng-alpha" value="1.0" step="0.1" class="lat-select" style="width: 80px; text-align: center; font-size: 0.8rem; padding: 3px;">
 
-              <label class="field-label" style="margin:0;">Dispersive δ (Mass)</label>
-              <input type="number" id="eng-disp-delta" value="0.5" step="0.05" class="lat-select" style="width: 80px; text-align: center; font-size: 0.8rem; padding: 3px;">
+              <label class="field-label" style="margin:0;" title="M̃(k): H_core(k) M̃(k) H_core(k) 항을 통해 평탄밴드에 곁들일 분산 섹터의 모양을 결정합니다. 어떤 모양을 선택해도 평탄밴드는 항상 정확히 평탄합니다.">분산 밴드 모양 M̃(k)</label>
+              <select id="eng-dispersive-shape" class="lat-select" style="width: 150px; font-size: 0.78rem; padding: 3px;">
+                <option value="none">none — 없음 (순수 α·H_core)</option>
+                <option value="nn_real" selected>nn_real — 실수 NN 호핑 (TRS 보존)</option>
+                <option value="onsite_mass">onsite_mass — 부격자 질량 스태거링</option>
+                <option value="haldane">haldane — Haldane형 NNN (TRS 깨짐)</option>
+                <option value="combo">combo — 복합 (NN+질량+Haldane)</option>
+              </select>
 
-              <label class="field-label" style="margin:0;">IFT BZ Grid (축별)</label>
-              <input type="number" id="eng-ift-grid" value="24" min="8" max="100" class="lat-select" style="width: 80px; text-align: center; font-size: 0.8rem; padding: 3px;">
+              <label class="field-label" style="margin:0;" title="선택한 M̃(k) 모양의 강도(세기) 파라미터입니다.">M̃(k) 강도</label>
+              <input type="number" id="eng-dispersive-strength" value="0.3" step="0.05" class="lat-select" style="width: 80px; text-align: center; font-size: 0.8rem; padding: 3px;">
 
               <label class="field-label" style="margin:0;" title="정확 평탄 모델의 호핑 범위는 CLS 기하로 자동 결정됩니다. 더 짧게 제한하면 평탄성이 깨지며, 그 오차가 결과에 표시됩니다.">최대 호핑 범위 R_max</label>
               <select id="eng-rmax" class="lat-select" style="width: 150px; font-size: 0.78rem; padding: 3px;">
@@ -619,7 +625,23 @@
                   <label style="display:flex; align-items:center; gap:2px;"><input type="checkbox" class="eng-explore-offset" value="7" checked>7</label>
                 </div>
               </div>
+              <div>
+                <span class="field-label" style="margin:0; display:block; margin-bottom:4px;" title="각 체크된 모양마다 후보를 생성합니다 (공유 강도/α 사용). 평탄밴드 자체(analytic_C, phase5_success, exact_flat)는 모양과 무관하게 동일하며, 분산 섹터(hopping table, gap)만 달라집니다.">분산 밴드 모양 M̃(k) 후보</span>
+                <div id="eng-explore-shapes" style="display:flex; flex-wrap:wrap; gap:8px; font-size:0.8rem;">
+                  <label style="display:flex; align-items:center; gap:2px;"><input type="checkbox" class="eng-explore-shape" value="none">none</label>
+                  <label style="display:flex; align-items:center; gap:2px;"><input type="checkbox" class="eng-explore-shape" value="nn_real" checked>nn_real</label>
+                  <label style="display:flex; align-items:center; gap:2px;"><input type="checkbox" class="eng-explore-shape" value="onsite_mass">onsite_mass</label>
+                  <label style="display:flex; align-items:center; gap:2px;"><input type="checkbox" class="eng-explore-shape" value="haldane" checked>haldane</label>
+                  <label style="display:flex; align-items:center; gap:2px;"><input type="checkbox" class="eng-explore-shape" value="combo" checked>combo</label>
+                </div>
+              </div>
               <div style="display:grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: start;">
+                <label class="field-label" style="margin:0;" title="위에서 체크한 모든 분산 모양 후보에 공유되는 M̃(k) 강도입니다.">M̃(k) 강도 (공유)</label>
+                <input type="number" id="eng-explore-strength" value="0.3" step="0.05" class="lat-select" style="width:80px; text-align:center; font-size:0.8rem; padding:3px;">
+
+                <label class="field-label" style="margin:0;" title="위에서 체크한 모든 분산 모양 후보에 공유되는 α(분산밴드 폭 스케일)입니다.">α (공유)</label>
+                <input type="number" id="eng-explore-alpha" value="1.0" step="0.1" class="lat-select" style="width:80px; text-align:center; font-size:0.8rem; padding:3px;">
+
                 <label class="field-label" style="margin:0;" title="정확 평탄 모델에서 호핑 범위 상한 후보. 자연 범위보다 작게 잡으면 평탄성이 깨지고 그 오차가 표시됩니다. 비우면 모두 정확.">최대 호핑 범위 R_max 후보<br>(콤마구분, 비우면 정확)</label>
                 <input type="text" id="eng-explore-rcuts" value="" placeholder="예: 1, 2  (비우면 정확 평탄)" class="lat-select" style="font-size:0.8rem; padding:3px;">
 
@@ -633,7 +655,7 @@
                 <input type="number" id="eng-explore-max-retries" value="2" min="0" max="10" class="lat-select" style="width:80px; text-align:center; font-size:0.8rem; padding:3px;">
               </div>
               <div style="font-size:0.7rem; color:#94a3b8; margin-top:6px; line-height:1.5;">
-                ※ 정확 평탄 모델은 CLS 기하로 호핑이 결정되므로 (t, δ)는 분산밴드 참조용일 뿐 결과 hopping을 바꾸지 않습니다. 후보는 주로 <strong>shell offset</strong>과 <strong>R_max</strong>로 달라집니다.
+                ※ 같은 평탄밴드(f(k))에 대해 <strong>shell offset</strong>·<strong>CLS 크기</strong>·<strong>R_max</strong>는 서로 다른 CLS 설계를, <strong>분산 밴드 모양</strong>은 같은 설계에 곁들일 서로 다른 분산 섹터 M̃(k)를 탐색합니다. 평탄도(exact_flat)는 모양과 무관하게 항상 보장됩니다.
               </div>
             </div>
           </details>
@@ -708,6 +730,7 @@
               <div>• <strong>호핑 범위:</strong> <span id="eng-val-range">-</span></div>
               <div>• <strong>평탄도 (max‖Hψ−E₀ψ‖):</strong> <span id="eng-val-flatness">-</span></div>
               <div>• <strong>투영 연산자(Projector) 연속성:</strong> <span id="eng-val-continuity">-</span></div>
+              <div>• <strong>분산 밴드 갭 (Dispersive Gap, 아래/위):</strong> <span id="eng-val-dispersive-gap">-</span></div>
             </div>
             </div>
 
@@ -729,8 +752,10 @@
               </div>
               <div style="font-size:0.8rem; color:#475569; line-height:1.4; display:flex; flex-direction:column; gap:4px;">
                 <div>• <strong>Spectral Weight 손실 (Truncation Ratio):</strong> <span id="eng-val-manual-trunc-ratio">-</span></div>
-                <div>• <strong>최종 Hopping 범위 Cutoff R_cut:</strong> <span id="eng-val-manual-rcut">-</span></div>
+                <div>• <strong>최대 호핑 범위 (max_hopping_range):</strong> <span id="eng-val-manual-rcut">-</span></div>
+                <div>• <strong>평탄도 (max‖Hψ−E₀ψ‖):</strong> <span id="eng-val-manual-flatness">-</span></div>
                 <div>• <strong>Truncated H 고립 여부:</strong> <span id="eng-val-manual-trunc">-</span></div>
+                <div>• <strong>분산 밴드 갭 (Dispersive Gap, 아래/위):</strong> <span id="eng-val-manual-dispersive-gap">-</span></div>
               </div>
               <div id="eng-manual-warnings" style="margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
               <pre id="eng-manual-summary" style="background:#0f172a; color:#a5f3fc; font-family:monospace; font-size:0.74rem; padding:10px; border-radius:6px; overflow-x:auto; white-space:pre-wrap; margin-top:8px;"></pre>
@@ -753,6 +778,7 @@
                 <thead>
                   <tr style="background:#e2e8f0; text-align:center; position:sticky; top:0;">
                     <th style="padding:4px;">#</th><th style="padding:4px;">offset</th>
+                    <th style="padding:4px;" title="분산 밴드 모양 M̃(k) (강도/α는 hover로 확인)">분산 모양</th>
                     <th style="padding:4px;" title="최대 호핑 범위 상한 (정확=제한없음)">R_max</th>
                     <th style="padding:4px;" title="CLS 설정 크기 (실제 범위셀, 사이트수)">CLS</th>
                     <th style="padding:4px;" title="실제 호핑 범위(셀)">범위</th>

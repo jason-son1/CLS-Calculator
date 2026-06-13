@@ -1913,8 +1913,11 @@ def design_flat_band_explore_stream(lattice_spec_json, target_json, E0=0.0,
 
         def serialize_candidate(cand):
             entry = {
-                "index": cand.index, "offset": cand.offset, "t": cand.t,
-                "delta": cand.delta, "R_cut0": cand.R_cut0, "score": cand.score,
+                "index": cand.index, "offset": cand.offset,
+                "dispersive_shape": cand.dispersive_shape,
+                "dispersive_strength": cand.dispersive_strength,
+                "alpha": cand.alpha,
+                "R_cut0": cand.R_cut0, "score": cand.score,
                 "cls_size": cand.cls_size, "error": cand.error,
             }
             if cand.result is not None:
@@ -1927,10 +1930,9 @@ def design_flat_band_explore_stream(lattice_spec_json, target_json, E0=0.0,
         attempts = []
         for cand, idx, total in iter_design_attempts(
                 lattice_spec, target, E0=float(E0), offsets=offsets,
-                mk_variants=mk_variants, R_cut0_variants=rcut_variants,
-                cls_sizes=cls_sizes, n_grid_ift=int(n_grid_ift),
-                max_retries=int(max_retries),
-                max_rcut_retries=int(max_rcut_retries), max_candidates=int(max_candidates)):
+                dispersive_variants=dispersive_variants, R_cut0_variants=rcut_variants,
+                cls_sizes=cls_sizes,
+                max_retries=int(max_retries), max_candidates=int(max_candidates)):
             attempts.append(cand)
             yield json.dumps({"type": "progress", "index": idx, "total": total,
                                "candidate": serialize_candidate(cand)}, default=_ser)

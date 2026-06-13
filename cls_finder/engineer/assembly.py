@@ -74,8 +74,8 @@ def evaluate_psi(x_k: List[LaurentPoly], k_cart: np.ndarray,
 
     Returns (f, psi, norm). At a designed common zero ||f(k_i)|| = 0 (Eq. 71
     common-zero condition), so psi is returned as None there -- use
-    `vortex_vector` (the analytic limit, Eq. 16) instead, which is exactly
-    what hamiltonian.NumericHk does when assembling P(k_i).
+    `vortex_vector` (the analytic limit, Eq. 16) instead, e.g. when assembling
+    P(k_i) directly.
     """
     f = np.array([p.evaluate(k_cart, primitive_vectors) for p in x_k], dtype=complex)
     norm = float(np.linalg.norm(f))

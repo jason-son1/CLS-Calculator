@@ -298,12 +298,10 @@ class FlatBandDesignPayload(BaseModel):
     lattice_spec: Any
     target: Any
     E0: float = 0.0
-    t: float = 0.3
-    delta: float = 0.5
-    n_grid_ift: int = 24
-    R_cut: int = 3
+    alpha: float = 1.0
+    dispersive_shape: str = "nn_real"
+    dispersive_strength: float = 0.3
     max_retries: int = 8
-    max_rcut_retries: int = 4
     r_max: int | None = None
     cls_size: int | None = None
 
@@ -314,12 +312,10 @@ def api_design_flat_band(payload: FlatBandDesignPayload):
         json.dumps(payload.lattice_spec),
         json.dumps(payload.target),
         payload.E0,
-        payload.t,
-        payload.delta,
-        payload.n_grid_ift,
-        payload.R_cut,
+        payload.alpha,
+        payload.dispersive_shape,
+        payload.dispersive_strength,
         payload.max_retries,
-        payload.max_rcut_retries,
         payload.r_max,
         payload.cls_size,
     )
@@ -330,11 +326,10 @@ class AnalyzeManualClsPayload(BaseModel):
     lattice_spec: Any
     cls_sites: Any
     E0: float = 0.0
-    t: float = 0.3
-    delta: float = 0.5
-    n_grid_ift: int = 24
-    R_cut: int = 3
-    max_rcut_retries: int = 4
+    alpha: float = 1.0
+    dispersive_shape: str = "nn_real"
+    dispersive_strength: float = 0.3
+    r_max: int | None = None
 
 
 @app.post("/api/analyze_manual_cls")
@@ -343,11 +338,10 @@ def api_analyze_manual_cls(payload: AnalyzeManualClsPayload):
         json.dumps(payload.lattice_spec),
         json.dumps(payload.cls_sites),
         payload.E0,
-        payload.t,
-        payload.delta,
-        payload.n_grid_ift,
-        payload.R_cut,
-        payload.max_rcut_retries,
+        payload.alpha,
+        payload.dispersive_shape,
+        payload.dispersive_strength,
+        payload.r_max,
     )
     return JSONResponse(content=json.loads(result))
 
@@ -356,13 +350,11 @@ class FlatBandExplorePayload(BaseModel):
     lattice_spec: Any
     target: Any
     E0: float = 0.0
-    mk_variants: list[list[float]] | None = None
+    dispersive_variants: list[list[Any]] | None = None
     offsets: list[int] | None = None
     rcut_variants: list[int] | None = None
     cls_sizes: list[int] | None = None
-    n_grid_ift: int = 24
     max_retries: int = 2
-    max_rcut_retries: int = 3
     max_candidates: int = 24
 
 
@@ -373,12 +365,10 @@ def api_design_flat_band_explore_stream(payload: FlatBandExplorePayload):
             json.dumps(payload.lattice_spec),
             json.dumps(payload.target),
             payload.E0,
-            json.dumps(payload.mk_variants) if payload.mk_variants is not None else None,
+            json.dumps(payload.dispersive_variants) if payload.dispersive_variants is not None else None,
             json.dumps(payload.offsets) if payload.offsets is not None else None,
             json.dumps(payload.rcut_variants) if payload.rcut_variants is not None else None,
-            payload.n_grid_ift,
             payload.max_retries,
-            payload.max_rcut_retries,
             payload.max_candidates,
             json.dumps(payload.cls_sizes) if payload.cls_sizes is not None else None,
         ):

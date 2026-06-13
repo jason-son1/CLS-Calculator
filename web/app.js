@@ -468,14 +468,27 @@ function applySpecToState(spec) {
     return entry;
   });
 
-  if (spec.hoppings) {
+  // Load hoppings if present
+  if (spec.hoppings && spec.hoppings.length > 0) {
+    state.hoppings = spec.hoppings.map(h => ({...h, R: [...h.R]}));
+  } else {
+    state.hoppings = [];
+  }
+
+  // Load symbolic matrix if present
+  if (spec.H_symbolic && spec.H_symbolic.length > 0) {
+    state.symbolicMatrix = spec.H_symbolic.map(row => [...row]);
+  } else {
+    state.symbolicMatrix = [];
+  }
+
+  // Determine active mode
+  if (spec.options && spec.options.hamiltonian_mode) {
+    state.hamiltonianMode = spec.options.hamiltonian_mode;
+  } else if (spec.hoppings && spec.hoppings.length > 0) {
     state.hamiltonianMode = 'hopping';
-    state.hoppings        = spec.hoppings.map(h => ({...h, R: [...h.R]}));
-    state.symbolicMatrix  = [];
-  } else if (spec.H_symbolic) {
+  } else {
     state.hamiltonianMode = 'matrix';
-    state.symbolicMatrix  = spec.H_symbolic.map(row => [...row]);
-    state.hoppings        = [];
   }
   // Sync tab UI
   const mode = state.hamiltonianMode;
@@ -536,6 +549,9 @@ function applySpecToState(spec) {
 
 // ─── Build Spec JSON from UI ──────────────────────────────────────────────────
 function buildSpec() {
+  // Sync current UI inputs to state first
+  syncUIToState();
+
   const spec = {
     lattice: {
       dimension: state.dimension,
@@ -547,7 +563,8 @@ function buildSpec() {
       flat_tol: state.flatTol,
       k_path_str: state.kPathStr,
       k_points_override: state.kPointsOverride,
-      plot_n: state.plotN || 60
+      plot_n: state.plotN || 60,
+      hamiltonian_mode: state.hamiltonianMode
     }
   };
 
@@ -556,52 +573,14 @@ function buildSpec() {
     spec.parameters = { ...state.parameters };
   }
 
-  if (state.hamiltonianMode === 'hopping') {
-    const cards = document.querySelectorAll('#hop-cards-ui .hop-card');
-    const hops = [];
-    cards.forEach(card => {
-      const selI   = card.querySelector('.hop-sel-i');
-      const selJ   = card.querySelector('.hop-sel-j');
-      const rInps  = card.querySelectorAll('.hop-r-inp');
-      const inpExpr = card.querySelector('.hop-expr-input');
-      if (!selI || !selJ) return;
-      const i   = parseInt(selI.value);
-      const j   = parseInt(selJ.value);
-      const R   = Array.from(rInps, inp => parseInt(inp.value) || 0);
+  // Save hoppings if they exist in state
+  if (state.hoppings && state.hoppings.length > 0) {
+    spec.hoppings = state.hoppings.map(h => ({...h, R: [...h.R]}));
+  }
 
-      // Support expression strings for hopping amplitude
-      const exprVal = inpExpr ? inpExpr.value.trim() : '0';
-      let t;
-      if (exprVal === '' || exprVal === '0') {
-        t = 0;
-      } else if (hasSymbolicParams(exprVal)) {
-        // Contains symbolic parameters → send as string
-        t = exprVal;
-      } else {
-        // Try to evaluate as number
-        try {
-          const numVal = evalMathExpr(exprVal);
-          t = numVal;
-        } catch (_) {
-          // Might contain I (imaginary) or complex expressions → send as string
-          t = exprVal;
-        }
-      }
-      hops.push({ i, j, R, t });
-    });
-    spec.hoppings = hops;
-  } else {
-    const Q   = state.orbitals.length;
-    const mat = [];
-    for (let r = 0; r < Q; r++) {
-      const row = [];
-      for (let c = 0; c < Q; c++) {
-        const el  = document.getElementById(`sym-${r}-${c}`);
-        row.push(el ? (el.value || '0') : '0');
-      }
-      mat.push(row);
-    }
-    spec.H_symbolic = mat;
+  // Save symbolic matrix if it exists in state
+  if (state.symbolicMatrix && state.symbolicMatrix.length > 0) {
+    spec.H_symbolic = state.symbolicMatrix.map(row => [...row]);
   }
 
   return spec;
@@ -7804,9 +7783,9 @@ async function runFlatBandDesign() {
       lattice_spec: lattice_spec,
       target: target,
       E0: parseFloat(document.getElementById('eng-e0').value) || 0.0,
-      t: parseFloat(document.getElementById('eng-disp-t').value) || 0.3,
-      delta: parseFloat(document.getElementById('eng-disp-delta').value) || 0.5,
-      n_grid_ift: parseInt(document.getElementById('eng-ift-grid').value) || 24,
+      alpha: parseFloat(document.getElementById('eng-alpha').value) || 1.0,
+      dispersive_shape: document.getElementById('eng-dispersive-shape').value,
+      dispersive_strength: parseFloat(document.getElementById('eng-dispersive-strength').value) || 0.3,
       max_retries: parseInt(document.getElementById('eng-max-retries').value) || 8,
       r_max: engGetRMax(),
       cls_size: engGetClsSize(),
@@ -7941,6 +7920,17 @@ function renderEngMetrics(result, target) {
       }
     }
 
+    // Dispersive gap: how far the dispersive sector sits below/above E0 at
+    // the (truncated) deliverable -- characterizes the M̃(k) dressing chosen
+    // via dispersive_shape/dispersive_strength/alpha.
+    const dispGapEl = document.getElementById('eng-val-dispersive-gap');
+    if (dispGapEl) {
+      const gb = v.dispersive_gap_below, ga = v.dispersive_gap_above;
+      const fmt = (g) => (typeof g === 'number') ? g.toFixed(4) : '-';
+      dispGapEl.textContent = (gb === undefined && ga === undefined) ? '-'
+        : `${fmt(gb)} / ${fmt(ga)} (shape=${v.dispersive_shape}, strength=${v.dispersive_strength}, α=${v.alpha})`;
+    }
+
     let contText = '';
     for (const [name, info] of Object.entries(v.continuity)) {
       const ok = info.loop.projector_continuous && info.loop.winding === target.singularities.find(s=>s.name === name)?.w;
@@ -7998,9 +7988,27 @@ function renderEngMetrics(result, target) {
     document.getElementById('eng-val-manual-trunc-ratio').textContent =
       (v.truncation_ratio !== undefined && v.truncation_ratio !== null) ? `${(v.truncation_ratio * 100).toFixed(4)}%` : '-';
     document.getElementById('eng-val-manual-rcut').textContent =
-      v.R_cut !== undefined ? v.R_cut : '-';
+      v.max_hopping_range !== undefined ? v.max_hopping_range : '-';
+    const manualFlatEl = document.getElementById('eng-val-manual-flatness');
+    if (manualFlatEl) {
+      const fd = v.flat_band_max_dev;
+      if (typeof fd === 'number' && fd >= 0) {
+        manualFlatEl.textContent = v.exact_flat
+          ? `${fd.toExponential(2)} (정확 평탄 — 재로드해도 유지됨)`
+          : `${fd.toExponential(2)} (범위 제한으로 평탄성 깨짐)`;
+        manualFlatEl.style.color = v.exact_flat ? '#16a34a' : '#d97706';
+      } else {
+        manualFlatEl.textContent = '-';
+      }
+    }
     document.getElementById('eng-val-manual-trunc').textContent =
       v.trunc_isolated === undefined ? '-' : (v.trunc_isolated ? '예' : '아니오');
+    const manualDispGapEl = document.getElementById('eng-val-manual-dispersive-gap');
+    if (manualDispGapEl) {
+      const gb = v.dispersive_gap_below, ga = v.dispersive_gap_above;
+      const fmt = (g) => (typeof g === 'number') ? g.toFixed(4) : '-';
+      manualDispGapEl.textContent = (gb === undefined && ga === undefined) ? '-' : `${fmt(gb)} / ${fmt(ga)}`;
+    }
 
     const warnBox = document.getElementById('eng-manual-warnings');
     if (warnBox) {
@@ -8054,11 +8062,10 @@ async function engRunManualAnalysis() {
       lattice_spec,
       cls_sites,
       E0: parseFloat(document.getElementById('eng-e0').value) || 0.0,
-      t: parseFloat(document.getElementById('eng-disp-t').value) || 0.3,
-      delta: parseFloat(document.getElementById('eng-disp-delta').value) || 0.5,
-      n_grid_ift: parseInt(document.getElementById('eng-ift-grid').value) || 24,
-      R_cut: engGetRMax() || 3,
-      max_rcut_retries: parseInt(document.getElementById('eng-max-retries').value) || 4,
+      alpha: parseFloat(document.getElementById('eng-alpha').value) || 1.0,
+      dispersive_shape: document.getElementById('eng-dispersive-shape').value,
+      dispersive_strength: parseFloat(document.getElementById('eng-dispersive-strength').value) || 0.3,
+      r_max: engGetRMax(),
     };
 
     logOutput.textContent = 'CLS 분석 실행 중... API 호출 중입니다.\n';
@@ -8110,12 +8117,14 @@ async function runFlatBandExplore() {
       throw new Error('최소 하나의 shell offset을 선택해야 합니다.');
     }
 
-    const mk_variants = document.getElementById('eng-explore-mk').value
-      .split('\n').map(l => l.trim()).filter(l => l)
-      .map(l => l.split(',').map(x => parseFloat(x.trim())))
-      .filter(pair => pair.length === 2 && !isNaN(pair[0]) && !isNaN(pair[1]));
-    if (mk_variants.length === 0) {
-      throw new Error('최소 하나의 (t, δ) 후보가 필요합니다.');
+    // Dispersive shape candidates: each checked shape becomes one variant,
+    // sharing the strength/alpha inputs below.
+    const sharedStrength = parseFloat(document.getElementById('eng-explore-strength').value) || 0.3;
+    const sharedAlpha = parseFloat(document.getElementById('eng-explore-alpha').value) || 1.0;
+    const dispersive_variants = Array.from(document.querySelectorAll('.eng-explore-shape:checked'))
+      .map(cb => [cb.value, sharedStrength, sharedAlpha]);
+    if (dispersive_variants.length === 0) {
+      throw new Error('최소 하나의 분산 밴드 모양을 선택해야 합니다.');
     }
 
     // R_max candidates: each value caps the hopping range; 0 (or empty) = no
@@ -8134,11 +8143,10 @@ async function runFlatBandExplore() {
       lattice_spec,
       target,
       E0: parseFloat(document.getElementById('eng-e0').value) || 0.0,
-      mk_variants,
+      dispersive_variants,
       offsets,
       rcut_variants,
       cls_sizes,
-      n_grid_ift: parseInt(document.getElementById('eng-ift-grid').value) || 24,
       max_retries: parseInt(document.getElementById('eng-explore-max-retries').value) || 2,
       max_candidates: parseInt(document.getElementById('eng-explore-max').value) || 24,
     };
@@ -8177,7 +8185,7 @@ async function runFlatBandExplore() {
         addEngCandidateRow(cand);
         if (progressEl) progressEl.textContent = `진행: ${data.index + 1} / ${data.total}`;
         const status = cand.error ? `오류: ${cand.error}` : `score=${cand.score.toFixed(2)}`;
-        logOutput.textContent += `[${data.index+1}/${data.total}] offset=${cand.offset} t=${cand.t} δ=${cand.delta} R_cut0=${cand.R_cut0} -> ${status}\n`;
+        logOutput.textContent += `[${data.index+1}/${data.total}] offset=${cand.offset} ${cand.dispersive_shape}(strength=${cand.dispersive_strength}, α=${cand.alpha}) R_cut0=${cand.R_cut0} -> ${status}\n`;
         logOutput.scrollTop = logOutput.scrollHeight;
       } else if (data.type === 'done') {
         engSt.explorePrimVecs = data.primitive_vectors;
@@ -8235,6 +8243,21 @@ function addEngCandidateRow(cand) {
   const cells = [
     cand.index + 1,
     cand.offset,
+  ];
+  cells.forEach(c => {
+    const td = document.createElement('td');
+    td.style.padding = '4px';
+    td.textContent = c;
+    tr.appendChild(td);
+  });
+
+  const tdShape = document.createElement('td');
+  tdShape.style.padding = '4px';
+  tdShape.textContent = cand.dispersive_shape ?? '-';
+  tdShape.title = `strength=${cand.dispersive_strength}, α=${cand.alpha}`;
+  tr.appendChild(tdShape);
+
+  const restCells = [
     (!cand.R_cut0 ? '정확' : cand.R_cut0),
     cls_info,
     v ? (v.max_hopping_range ?? '-') : '-',
@@ -8244,7 +8267,7 @@ function addEngCandidateRow(cand) {
     cand.error ? '-' : cand.score.toFixed(2),
     status,
   ];
-  cells.forEach(c => {
+  restCells.forEach(c => {
     const td = document.createElement('td');
     td.style.padding = '4px';
     td.textContent = c;
@@ -8302,7 +8325,7 @@ function engSelectCandidate(idx) {
     hoppings: cand.hoppings,
     verification: cand.verification,
     x_k: cand.x_k,
-    log: [`후보 #${idx+1}: offset=${cand.offset}, t=${cand.t}, delta=${cand.delta}, R_cut0=${cand.R_cut0}, score=${cand.score.toFixed(2)}`],
+    log: [`후보 #${idx+1}: offset=${cand.offset}, ${cand.dispersive_shape}(strength=${cand.dispersive_strength}, α=${cand.alpha}), R_cut0=${cand.R_cut0}, score=${cand.score.toFixed(2)}`],
   };
 
   renderEngMetrics(engLastResult, engSt.exploreTarget);
