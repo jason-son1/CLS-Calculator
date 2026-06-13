@@ -220,6 +220,7 @@
       <button class="rtab" data-panel="nanoribbon">나노리본 분석</button>
       <button class="rtab" data-panel="rbm">경계 모드 (RBM)</button>
       <button class="rtab" data-panel="engineer">Flat Band 설계</button>
+      <button class="rtab" data-panel="topology">글로벌 위상</button>
     </div>
 
     <!-- Process Log -->
@@ -782,6 +783,97 @@
       </div>
 
       <div id="eng-loading" class="band-loading-overlay hidden" style="position: absolute; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:rgba(255,255,255,0.7); z-index:100;">
+        <div class="band-loading-spinner"></div>
+      </div>
+    </div>
+
+    <!-- Global Topology Analysis -->
+    <div id="panel-topology" class="result-panel hidden" style="position: relative;">
+      <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
+        <h3>글로벌 위상 분석 (Global Topology Analysis)</h3>
+        <span class="panel-note">이산화된 브릴루앙 영역에서 Fukui-Hatsugai-Suzuki Chern 수, Wilson Loop (WCC flow), Cylinder Entanglement Spectrum, Fu-Kane Invariant 등을 계산합니다.</span>
+      </div>
+
+      <!-- Settings toolbar -->
+      <div class="lat-toolbar" style="margin-bottom: 15px; flex-wrap: wrap; gap: 10px; padding: 10px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 8px;">
+        <span class="lat-ctrl-label" style="font-weight: bold; color: #475569;">점유 밴드 설정 (Occupied Bands):</span>
+        <input type="text" id="topo-bands-input" placeholder="예: 0 또는 0,1 (비워두면 평탄 밴드 자동 선택)" class="lat-select" style="width: 220px; padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.8rem;">
+        
+        <span class="lat-ctrl-label">Wilson kx 격자 (Nx)</span>
+        <input type="number" id="topo-nx" class="lat-select" style="width: 55px; padding: 4px 6px;" value="40" min="10" max="100">
+        
+        <span class="lat-ctrl-label">Wilson ky 격자 (Ny)</span>
+        <input type="number" id="topo-ny" class="lat-select" style="width: 55px; padding: 4px 6px;" value="40" min="10" max="100">
+        
+        <span class="lat-ctrl-label">Cylinder 폭 (Nx)</span>
+        <input type="number" id="topo-cyl-nx" class="lat-select" style="width: 55px; padding: 4px 6px;" value="40" min="10" max="100">
+
+        <button id="topo-run-btn" class="btn btn-run" style="margin: 0; padding: 6px 16px; font-size: 0.82rem; font-weight: bold; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s;">
+          ⚡ 위상 분석 실행
+        </button>
+      </div>
+
+      <!-- Layout: Wilson Loop & Entanglement Spectrum side by side -->
+      <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 15px;">
+        <!-- Left: Wilson Loop / WCC Flow -->
+        <div style="flex: 1; min-width: 380px; background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+          <h4 style="margin-top: 0; color: #1e1b4b; display: flex; align-items: center; gap: 6px;">
+            <span>🔄</span> Wilson Loop & Wannier Charge Center (WCC) Flow
+          </h4>
+          <p style="font-size: 0.75rem; color: #64748b; margin-bottom: 1rem; line-height: 1.5;">
+            kx 방향으로 Wilson Loop을 구하여 고유값 위상각 &nu;_j(ky)을 ky에 대해 플롯합니다. WCC 흐름의 Winding number 합은 Chern 수와 같으며, TRIM 지점에서의 겹침 성질은 Z2 불변량을 결정합니다.
+          </p>
+          <div id="topo-wcc-plot" class="plotly-container" style="height: 380px; width: 100%;"></div>
+          <div id="topo-wcc-result" style="margin-top: 10px; font-size: 0.82rem; font-weight: bold; color: #1e293b; background: #f1f5f9; padding: 8px 12px; border-radius: 6px;">
+            결과 대기 중...
+          </div>
+        </div>
+
+        <!-- Right: Entanglement Spectrum -->
+        <div style="flex: 1; min-width: 380px; background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+          <h4 style="margin-top: 0; color: #1e1b4b; display: flex; align-items: center; gap: 6px;">
+            <span>🧬</span> Cylinder Entanglement Spectrum (ES)
+          </h4>
+          <p style="font-size: 0.75rem; color: #64748b; margin-bottom: 1rem; line-height: 1.5;">
+            실공간 경계가 없는 실린더 격자 구조(x방향 개방, y방향 주기)를 구성하고, 단일 입자 상관 행렬 C_A(ky)의 고유값으로부터 도출한 Entanglement Energy &epsilon;_m(ky)을 ky에 대해 플롯합니다.
+          </p>
+          <div id="topo-es-plot" class="plotly-container" style="height: 380px; width: 100%;"></div>
+          <div id="topo-es-result" style="margin-top: 10px; font-size: 0.82rem; font-weight: bold; color: #1e293b; background: #f1f5f9; padding: 8px 12px; border-radius: 6px;">
+            결과 대기 중...
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom: Fu-Kane Symmetry Indicators -->
+      <div style="margin-top: 1.5rem; background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+        <h4 style="margin-top: 0; color: #1e1b4b; display: flex; align-items: center; gap: 6px;">
+          <span>⚖️</span> 공간 반전 대칭과 Fu-Kane 공식 (Symmetry Indicators)
+        </h4>
+        <p style="font-size: 0.75rem; color: #64748b; margin-bottom: 1rem; line-height: 1.5;">
+          공간 반전 대칭 연산자 P가 존재할 때, 4개의 TRIM 지점 (&Gamma;, X, Y, M)에서 점유 상태들의 Parity 고유값 곱을 구하여 Z2 위상 불변량을 초고속 계산합니다.
+        </p>
+        
+        <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;">
+          <div style="flex: 1; min-width: 250px;">
+            <label class="field-label" style="font-size: 0.76rem; font-weight: bold; color: #475569;">공간 반전 대칭 연산자 P (대각 성분 입력, 쉼표 구분):</label>
+            <input type="text" id="topo-parity-input" placeholder="예: 1, 1, -1 (오비탈 수 만큼 입력, 기본값은 전부 1)" class="input-full" style="padding: 6px; font-size: 0.8rem;">
+            <div style="font-size: 0.7rem; color: #64748b; margin-top: 4px;">
+              * TRIM 지점에서 [H(k), P] = 0이 성립해야 유효합니다. 성립하지 않을 시 Wilson Loop WCC Flow로 자동 Fallback 됩니다.
+            </div>
+          </div>
+          <div style="display: flex; align-items: flex-end;">
+            <button id="topo-fukane-btn" class="btn btn-secondary" style="margin: 0; padding: 6px 14px; font-size: 0.8rem; height: 34px; cursor: pointer;">
+              ⚖️ Fu-Kane 계산 실행
+            </button>
+          </div>
+        </div>
+
+        <div id="topo-fukane-result" style="font-size: 0.82rem; line-height: 1.6; background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 6px; padding: 12px; color: #581c87;">
+          공간 반전 대칭 연산자 설정을 확인하고 계산을 진행해 주세요.
+        </div>
+      </div>
+
+      <div id="topo-loading" class="band-loading-overlay hidden" style="position: absolute; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:rgba(255,255,255,0.7); z-index:100;">
         <div class="band-loading-spinner"></div>
       </div>
     </div>

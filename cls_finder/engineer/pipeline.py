@@ -5,30 +5,30 @@ pipeline.py — design_flat_band(): full Phase 1-5 orchestration.
         -> Phase1  validate_design                     (spec.py)
         -> Phase2/3 build_cls_design (per singularity) (pairing.py / chiral.py)
         -> Phase4  build_x_k + verify_projector_continuity + analytic_chern
-        -> Phase5  build_hamiltonian (NumericHk) + inverse_fourier_transform
-        -> DesignResult (cls_designs, x_k, H_k, hoppings, verification log)
+        -> Phase5  build_engineered_hamiltonian (H_core/alpha/M_tilde)
+        -> DesignResult (cls_designs, x_k, H_full, H_trunc, hoppings, verification log)
 
-FEEDBACK LOOPS (Note B Sec.12 / Rhim-Yang):
+FEEDBACK LOOP (Note B Sec.12 / Rhim-Yang):
   - Phase3/4: if the contour winding at any target singularity does not match
     its target w_i, or the projector is discontinuous there, or the GLOBAL
     analytic_chern(x_k).C != target.C (e.g. an unintended extra common zero
     appeared, ARCHITECTURE.md Sec.0.4), the per-sublattice bond-vector shell
     assignment is rotated (chiral.shell_for_sublattice's `offset`) and Phase
     2-4 is retried, up to `max_retries` times.
-  - Phase5: if the R_cut-truncated Hamiltonian H_trunc is gapped (band_isolation)
-    but its numerical Chern number does not match target.C, R_cut is increased
-    and the IFT is retried, up to `max_rcut_retries` times. chern.py's
-    analytic_chern (contour winding of x_k) and numerical_chern (FHS lattice
-    Chern of H(k)'s eigenvectors) are independently gauge-invariant but their
-    RELATIVE SIGN depends on sign(det(lattice.primitive_vectors)) -- see
-    _numerical_sign_convention. That sign is fixed once from the EXACT H(k)
-    (always correct: Eq.127 + the Phase3/4 analytic check) and then used to
-    ALIGN H_trunc's FHS Chern to target_C's convention for both the retry
-    condition and the reported `*_numerical_C` fields, so a sign flip caused
-    by IFT truncation breaking the flat band's isolation is reported as a
-    genuine MISMATCH (not masked as a "match" by chern.py's own abs()-based
-    agreement check, _chern_matches, which remains only as a degenerate
-    fallback when even the exact H(k) disagrees with target_C in magnitude).
+
+SIGN CONVENTION:
+  chern.py's analytic_chern (contour winding of x_k) and numerical_chern (FHS
+  lattice Chern of H(k)'s eigenvectors) are each independently gauge-invariant,
+  but their RELATIVE SIGN depends on sign(det(lattice.primitive_vectors)) --
+  see _numerical_sign_convention. That sign is fixed once from the EXACT,
+  untruncated H_full(k) (always correct: H_full f = E0 f for any alpha/M_tilde,
+  plus the Phase3/4 analytic check) and then used to ALIGN H_trunc's FHS Chern
+  to target_C's convention for the reported `*_numerical_C` fields, so a sign
+  flip caused by r_max truncation breaking the flat band's isolation is
+  reported as a genuine MISMATCH (not masked as a "match" by chern.py's own
+  abs()-based agreement check, _chern_matches, which remains only as a
+  degenerate fallback when even H_full(k) disagrees with target_C in
+  magnitude).
 
 SCOPE NOTE (S = number of target singularities):
   For S=1 (|target.C|=1 -- the minimal construction of Note A/B), the
@@ -68,48 +68,10 @@ from cls_finder.engineer.pairing import CLSDesign
 from cls_finder.engineer.chiral import build_cls_design
 from cls_finder.engineer.assembly import build_x_k, evaluate_psi, verify_projector_continuity
 from cls_finder.engineer.hamiltonian import (
-    NumericHk, build_hamiltonian, inverse_fourier_transform, hoppings_to_matrixpoly,
-    build_local_flat_hamiltonian,
+    build_engineered_hamiltonian, matrixpoly_to_hoppings, max_hopping_range,
+    flatness_deviation, hoppings_to_matrixpoly,
 )
-
-
-def _matrixpoly_to_hoppings(H: MatrixPoly, tol: float = 1e-9) -> Dict:
-    """{(alpha, beta, (n, m)): complex} for the nonzero hoppings of a
-    finite-range MatrixPoly (the real-space tight-binding model)."""
-    hops: Dict = {}
-    for a in range(H.rows):
-        for b in range(H.cols):
-            for (n, m), val in H.data[a][b].coefs.items():
-                if abs(val) > tol:
-                    hops[(a, b, (int(n), int(m)))] = complex(val)
-    return hops
-
-
-def _max_hopping_range(hoppings: Dict) -> int:
-    return max((max(abs(n), abs(m)) for (_, _, (n, m)) in hoppings), default=0)
-
-
-def _flatness_from_xk(H, x_k, lattice_spec, E0, n: int = 16) -> float:
-    """max_k || H(k) psi(k) - E0 psi(k) || over an n x n BZ grid, with
-    psi(k)=f(k)/||f(k)|| from x_k (skipping the common zeros). Works for any
-    H exposing .evaluate_batch (NumericHk or MatrixPoly)."""
-    try:
-        prim = lattice_spec.primitive_vectors
-        B = lattice_spec.reciprocal_vectors()
-        frac = _chern._frac_grid(n, n)
-        k_cart = frac @ B
-        F = np.stack([p.evaluate_batch(k_cart, prim) for p in x_k], axis=1)
-        norm2 = np.sum(np.abs(F) ** 2, axis=1)
-        Hb = H.evaluate_batch(k_cart, prim)
-        worst = 0.0
-        for i in range(k_cart.shape[0]):
-            if norm2[i] < 1e-6:
-                continue
-            psi = F[i] / np.sqrt(norm2[i])
-            worst = max(worst, float(np.linalg.norm(Hb[i] @ psi - E0 * psi)))
-        return worst
-    except Exception:
-        return -1.0
+from cls_finder.engineer.dispersive import build_dispersive_M
 
 
 def _chern_matches(numerical_C: int, target_C: int) -> bool:
@@ -123,9 +85,9 @@ def _chern_matches(numerical_C: int, target_C: int) -> bool:
     This is intentionally LOOSE (a |C|=1 target accepts BOTH +1 and -1) and
     is used ONLY as the degenerate fallback in design_flat_band's Phase5 when
     _numerical_sign_convention cannot determine this lattice's FHS sign
-    convention from the exact H(k) (sign_conv == 0, see below). In the normal
-    case, design_flat_band aligns numerical_chern's sign to target_C's
-    convention BEFORE comparing, so a real sign flip (e.g. caused by IFT
+    convention from the exact H_full(k) (sign_conv == 0, see below). In the
+    normal case, design_flat_band aligns numerical_chern's sign to target_C's
+    convention BEFORE comparing, so a real sign flip (e.g. caused by r_max
     truncation breaking the flat band's isolation) is reported as a genuine
     mismatch rather than masked by abs().
     """
@@ -144,17 +106,17 @@ def _numerical_sign_convention(num_full_C: int, target_C: int) -> int:
     == +analytic_chern(x_k).C (verified empirically for det(prim) = +-1 on
     the square lattice, both w=+1 and w=-1).
 
-    H_k (Eq.127) is exactly flat and Phase3/4 already verified
-    analytic_chern(x_k).C == target_C, so num_full_C (FHS on the EXACT H_k)
-    must equal +-target_C; whichever sign it is IS this lattice's FHS sign
-    convention, and the SAME sign relates numerical_chern(H_trunc).C to
-    target_C.
+    H_full(k) is exactly flat for any alpha/M_tilde and Phase3/4 already
+    verified analytic_chern(x_k).C == target_C, so num_full_C (FHS on the
+    EXACT H_full(k)) must equal +-target_C; whichever sign it is IS this
+    lattice's FHS sign convention, and the SAME sign relates
+    numerical_chern(H_trunc).C to target_C.
 
     Returns +1 or -1 normally (target_C == 0 trivially returns +1, since
     +-0 are indistinguishable), or 0 if num_full_C does not match target_C in
-    MAGNITUDE either -- a degenerate case (even the exact H(k)'s FHS Chern
-    disagrees with the analytically-verified target) where no alignment is
-    possible and the caller should fall back to _chern_matches.
+    MAGNITUDE either -- a degenerate case (even the exact H_full(k)'s FHS
+    Chern disagrees with the analytically-verified target) where no alignment
+    is possible and the caller should fall back to _chern_matches.
     """
     if target_C == 0:
         return 1
@@ -167,8 +129,7 @@ def _numerical_sign_convention(num_full_C: int, target_C: int) -> int:
 
 def _phase5_success(analytic_match: bool, trunc_isolated: bool,
                     trunc_match: bool) -> bool:
-    """Whether the IFT-truncated tight-binding deliverable realizes the
-    designed topology.
+    """Whether the tight-binding deliverable realizes the designed topology.
 
     CONCEPTUAL BASIS (Note A Sec.8, "Flat band 특이성과의 연결"): a finite-range
     CLS flat band that carries a NONZERO Chern number is necessarily a
@@ -181,7 +142,7 @@ def _phase5_success(analytic_match: bool, trunc_isolated: bool,
 
     Ground truth is the ANALYTIC design: the global contour-winding Chern of
     f(k) equals the target (`analytic_match`, established by Phase 2-4, which
-    is independent of M(k) and of any truncation). Given that:
+    is independent of M_tilde(k) and of any truncation). Given that:
 
       - if the truncated H is gapped (isolated), the lattice FHS Chern is
         reliable and we additionally require it to confirm the target
@@ -206,7 +167,7 @@ class DesignResult:
     target: DesignTarget
     cls_designs: List[CLSDesign]
     x_k: List[LaurentPoly]
-    H_k: NumericHk
+    H_full: MatrixPoly
     H_trunc: MatrixPoly
     ift: Dict
     verification: Dict
@@ -231,12 +192,13 @@ class DesignResult:
 
 
 def design_flat_band(lattice_spec: LatticeSpec, target: DesignTarget,
-                      E0: float = 0.0, M_k: Optional[MatrixPoly] = None,
-                      t: float = 0.3, delta: float = 0.5,
-                      n_grid_ift: int = 24, R_cut: int = 3,
-                      max_retries: int = 8, max_rcut_retries: int = 4,
+                      E0: float = 0.0, alpha: float = 1.0,
+                      dispersive_shape: str = "nn_real",
+                      dispersive_strength: float = 0.3,
+                      M_tilde: Optional[MatrixPoly] = None,
+                      max_retries: int = 8,
                       shell_offset0: int = 0, derive_zeta_gauge: bool = True,
-                      local_exact: bool = True, r_max: Optional[int] = None,
+                      r_max: Optional[int] = None,
                       cls_size: Optional[int] = None,
                       verbose: bool = True) -> DesignResult:
     """Run the full Real-Space CLS Topological Flat Band Engineering pipeline.
@@ -245,33 +207,28 @@ def design_flat_band(lattice_spec: LatticeSpec, target: DesignTarget,
     ----------
     lattice_spec : Module 1 lattice geometry (a1, a2, sublattices, zeta's).
     target        : Module 1 topological target (C, [(k_i, w_i)]).
-    E0            : flat-band energy (Eq. 127).
-    M_k           : optional user-supplied N x N Hermitian MatrixPoly for the
-                    dispersive sector; defaults to hamiltonian.default_M_k.
-    t, delta      : hopping / on-site-mass scales used by default_M_k if
-                    M_k is None (hamiltonian.default_M_k).
-    n_grid_ift, R_cut : IFT BZ-grid size and initial hopping-range cutoff.
+    E0            : flat-band energy.
+    alpha         : Dispersive-band bandwidth scale -- the coefficient of
+                    H_core(k) in H(k) = E0 I + alpha*H_core(k) +
+                    H_core(k) M_tilde(k) H_core(k) (Hamiltonian Engineering
+                    note, Sec.2).
+    dispersive_shape, dispersive_strength :
+                    Name (cls_finder.engineer.dispersive.DISPERSIVE_SHAPES)
+                    and strength of the M_tilde(k) "dispersive shape" used to
+                    dress the N-1 dispersive bands. Ignored if M_tilde is
+                    given explicitly.
+    M_tilde       : optional user-supplied N x N Hermitian MatrixPoly
+                    overriding dispersive_shape/dispersive_strength.
     max_retries   : Phase3/4 shell-offset feedback retries.
-    max_rcut_retries : Phase5 R_cut feedback retries.
     shell_offset0 : starting shell offset (chiral.shell_for_sublattice).
-    local_exact   : if True (default), the deliverable tight-binding model is
-                    the Rhim-Yang FINITE-RANGE, EXACTLY-FLAT construction
-                    H_loc(k) = E0 I + (||f||^2 I - f f^dagger) built directly
-                    from x_k (hamiltonian.build_local_flat_hamiltonian) -- so
-                    the flat band stays PERFECTLY flat when the model is
-                    reloaded into the band/CLS analyser, and touches the
-                    dispersive sector only at the designed singularity. If
-                    False, the old behaviour is used: the non-local projector
-                    H(k)=E0 P+(I-P)M(I-P) is inverse-Fourier-transformed and
-                    truncated to |R|<=R_cut (which breaks exact flatness).
     r_max         : optional cap on the deliverable's hopping range (in unit
-                    cells), applied ONLY in local_exact mode. None (default)
-                    keeps the natural, EXACTLY-flat range set by the CLS
-                    geometry. An integer r_max DROPS every hopping with
+                    cells). None (default) keeps the natural, EXACTLY-flat
+                    range set by the CLS geometry and (alpha, M_tilde). An
+                    integer r_max DROPS every hopping with
                     max(|n|,|m|) > r_max -- e.g. r_max=1 forces a
                     nearest-neighbour-only model, r_max=2 allows next-nearest,
-                    etc. This is an APPROXIMATION: truncating the exact local
-                    model generally breaks perfect flatness, so the resulting
+                    etc. This is an APPROXIMATION: truncating the exact model
+                    generally breaks perfect flatness, so the resulting
                     flat_band_max_dev (reported honestly) is no longer ~0; use
                     it to trade hopping range against flatness consciously.
     cls_size      : optional target SIZE (spatial extent, in unit cells) of the
@@ -413,111 +370,78 @@ def design_flat_band(lattice_spec: LatticeSpec, target: DesignTarget,
              f"topology -- see log above)")
 
     # ------------------------------------------------------------------ #
-    # Phase 5 -- non-local reference H_k = E0 P + (I-P) M (I-P) (Eq.127),
-    # used only as the analytic-flatness reference + FHS sign convention.
+    # Phase 5 -- H(k) = E0 I + alpha*H_core(k) + H_core(k) M_tilde(k) H_core(k)
+    # (Sec.2 of the Hamiltonian Engineering note). H_core(k) f(k) = 0 for all
+    # k and H_core(k_i) = 0 at the designed singularities, so H_full is
+    # EXACTLY flat at E0 and touches the dispersive sector only at k_i, for
+    # ANY (alpha, M_tilde) -- M_tilde only dresses the N-1 dispersive bands.
     # ------------------------------------------------------------------ #
-    H_k = build_hamiltonian(x_k, lattice_spec, target, E0=E0, M=M_k, t=t, delta=delta)
+    M_tilde_resolved = M_tilde if M_tilde is not None else build_dispersive_M(
+        lattice_spec, dispersive_shape, dispersive_strength)
+    H_full = build_engineered_hamiltonian(x_k, E0=E0, alpha=alpha, M_tilde=M_tilde_resolved)
 
-    iso_full = _chern.band_isolation(H_k, lattice, E0, 1)
-    num_full = _chern.numerical_chern(H_k, lattice, E0, 1)
+    hoppings_full = matrixpoly_to_hoppings(H_full)
+    natural_range = max_hopping_range(hoppings_full)
+    weight_full = sum(abs(v) ** 2 for v in hoppings_full.values())
+
+    iso_full = _chern.band_isolation(H_full, lattice, E0, 1)
+    num_full = _chern.numerical_chern(H_full, lattice, E0, 1)
     sign_conv = _numerical_sign_convention(num_full["C"], target_C)
     full_numerical_C = sign_conv * num_full["C"] if sign_conv else num_full["C"]
     full_match = ((full_numerical_C == target_C) if sign_conv
                    else _chern_matches(num_full["C"], target_C))
-    emit(f"[Phase5] reference H(k)=E0 P+(I-P)M(I-P): isolated={iso_full['isolated']} "
-         f"numerical C={full_numerical_C} (FHS_raw={num_full['C']}, "
-         f"sign_convention={sign_conv})")
+    emit(f"[Phase5] H(k)=E0 I + alpha*H_core + H_core*M_tilde*H_core "
+         f"(alpha={alpha}, dispersive_shape={dispersive_shape!r}, "
+         f"dispersive_strength={dispersive_strength}): "
+         f"{len(hoppings_full)} hopping terms, natural range {natural_range} "
+         f"cells, isolated={iso_full['isolated']}, numerical C={full_numerical_C} "
+         f"(FHS_raw={num_full['C']}, sign_convention={sign_conv})")
 
-    # ------------------------------------------------------------------ #
-    # Phase 5 deliverable -- FINITE-RANGE, EXACTLY-FLAT tight-binding model.
-    # The projector H_k above is exactly flat but NON-local (infinite-range
-    # hoppings via the 1/||f||^2 normalisation); inverse-Fourier-truncating it
-    # breaks the flatness, so the reloaded model no longer has a clean flat
-    # band. Instead we build the Rhim-Yang local construction
-    #     H_loc(k) = E0 I + t (||f||^2 I - f f^dagger),
-    # which is finite-range AND exactly flat (H_loc f = E0 f identically) AND
-    # touches the dispersive sector only at the designed singularity (||f||^2=0)
-    # -- where the Chern winding lives (Note A Sec.8). This is the deliverable
-    # that survives re-analysis with the flat band intact.
-    # ------------------------------------------------------------------ #
     r_max_applied = False
-    natural_range = 0
-    if local_exact:
-        H_full = build_local_flat_hamiltonian(x_k, E0=E0, t=1.0)
-        hoppings_full = _matrixpoly_to_hoppings(H_full)
-        natural_range = _max_hopping_range(hoppings_full)
-        weight_full = sum(abs(v) ** 2 for v in hoppings_full.values())
-
-        if r_max is not None and natural_range > r_max:
-            hoppings = {key: v for key, v in hoppings_full.items()
-                        if max(abs(key[2][0]), abs(key[2][1])) <= r_max}
-            H_trunc = hoppings_to_matrixpoly(hoppings, lattice_spec.N)
-            r_max_applied = True
-            weight_kept = sum(abs(v) ** 2 for v in hoppings.values())
-            trunc_ratio = 1.0 - (weight_kept / weight_full if weight_full > 1e-300 else 1.0)
-        else:
-            hoppings = hoppings_full
-            H_trunc = H_full
-            trunc_ratio = 0.0
-
-        max_range = _max_hopping_range(hoppings)
-        n_terms = len(hoppings)
-        flat_dev = _flatness_from_xk(H_trunc, x_k, lattice_spec, E0)
-        iso_trunc = _chern.band_isolation(H_trunc, lattice, E0, 1)
-        num_trunc = _chern.numerical_chern(H_trunc, lattice, E0, 1)
-        if sign_conv:
-            trunc_numerical_C = sign_conv * num_trunc["C"]
-            trunc_match = (trunc_numerical_C == target_C)
-        else:
-            trunc_numerical_C = num_trunc["C"]
-            trunc_match = _chern_matches(num_trunc["C"], target_C)
-        ift = {"hoppings": hoppings, "R_cut": max_range, "n_grid": n_grid_ift,
-               "truncation_ratio": trunc_ratio}
-        if r_max_applied:
-            emit(f"[Phase5] local model CAPPED to r_max={r_max} (natural range "
-                 f"{natural_range}): {n_terms} terms, {trunc_ratio*100:.2f}% of "
-                 f"||t||^2 dropped -> flatness max||H psi-E0 psi||={flat_dev:.2e} "
-                 "(APPROXIMATE: capping range breaks exact flatness)")
-        else:
-            emit(f"[Phase5] EXACT local model H_loc(k)=E0 I + (||f||^2 I - f f^dagger): "
-                 f"{n_terms} hopping terms, max range {max_range} cells, "
-                 f"flatness max||H psi - E0 psi||={flat_dev:.2e} (EXACT, no "
-                 "truncation -- flat band survives re-analysis intact)")
-        emit(f"[Phase5] H_loc isolated={iso_trunc['isolated']} "
-             f"(touching at the singularity is EXPECTED for nonzero C), "
-             f"numerical C={trunc_numerical_C} (FHS_raw={num_trunc['C']})")
+    if r_max is not None and natural_range > r_max:
+        hoppings = {key: v for key, v in hoppings_full.items()
+                    if max(abs(key[2][0]), abs(key[2][1])) <= r_max}
+        H_trunc = hoppings_to_matrixpoly(hoppings, lattice_spec.N)
+        r_max_applied = True
+        weight_kept = sum(abs(v) ** 2 for v in hoppings.values())
+        trunc_ratio = 1.0 - (weight_kept / weight_full if weight_full > 1e-300 else 1.0)
     else:
-        flat_dev = _flatness_from_xk(H_k, x_k, lattice_spec, E0)
-        ift = {}
-        H_trunc = None
-        iso_trunc, num_trunc = {}, {}
-        trunc_numerical_C, trunc_match = None, False
-        for rattempt in range(max_rcut_retries):
-            rc = R_cut + rattempt
-            ift = inverse_fourier_transform(H_k, lattice_spec, n_grid=n_grid_ift, R_cut=rc)
-            H_trunc = hoppings_to_matrixpoly(ift["hoppings"], lattice_spec.N)
-            iso_trunc = _chern.band_isolation(H_trunc, lattice, E0, 1)
-            num_trunc = _chern.numerical_chern(H_trunc, lattice, E0, 1)
-            if sign_conv:
-                trunc_numerical_C = sign_conv * num_trunc["C"]
-                trunc_match = (trunc_numerical_C == target_C)
-            else:
-                trunc_numerical_C = num_trunc["C"]
-                trunc_match = _chern_matches(num_trunc["C"], target_C)
-            emit(f"[Phase5] IFT R_cut={rc}: truncation_ratio="
-                 f"{ift['truncation_ratio']:.2e}, H_trunc isolated="
-                 f"{iso_trunc['isolated']}, numerical C_trunc={trunc_numerical_C}")
-            if trunc_match or not iso_trunc["isolated"]:
-                break
+        hoppings, H_trunc, trunc_ratio = hoppings_full, H_full, 0.0
+
+    max_range = max_hopping_range(hoppings)
+    n_terms = len(hoppings)
+    flat_dev = flatness_deviation(H_trunc, x_k, lattice_spec, E0)
+    iso_trunc = _chern.band_isolation(H_trunc, lattice, E0, 1)
+    num_trunc = _chern.numerical_chern(H_trunc, lattice, E0, 1)
+    if sign_conv:
+        trunc_numerical_C = sign_conv * num_trunc["C"]
+        trunc_match = (trunc_numerical_C == target_C)
+    else:
+        trunc_numerical_C = num_trunc["C"]
+        trunc_match = _chern_matches(num_trunc["C"], target_C)
+    ift = {"hoppings": hoppings, "R_cut": max_range, "truncation_ratio": trunc_ratio}
+
+    if r_max_applied:
+        emit(f"[Phase5] CAPPED to r_max={r_max} (natural range {natural_range}): "
+             f"{n_terms} terms, {trunc_ratio*100:.2f}% of ||t||^2 dropped -> "
+             f"flatness max||H psi-E0 psi||={flat_dev:.2e} (APPROXIMATE: capping "
+             "range breaks exact flatness)")
+    else:
+        emit(f"[Phase5] EXACT model: {n_terms} hopping terms, max range "
+             f"{max_range} cells, flatness max||H psi - E0 psi||={flat_dev:.2e} "
+             "(EXACT, no truncation -- flat band survives re-analysis intact)")
+    emit(f"[Phase5] H_trunc isolated={iso_trunc['isolated']} "
+         f"(touching at the singularity is EXPECTED for nonzero C), "
+         f"numerical C={trunc_numerical_C} (FHS_raw={num_trunc['C']})")
 
     # ------------------------------------------------------------------ #
     # Verification log
     # ------------------------------------------------------------------ #
     # Ground truth is the analytic design (global contour-winding Chern of
-    # f(k) == target, independent of M(k)/truncation). A TOUCHING (non-isolated)
-    # truncated band is the EXPECTED outcome for a topological CLS flat band
-    # and is accepted on that analytic guarantee; isolation only lets the
-    # (otherwise-unreliable) FHS Chern additionally confirm it. See
+    # f(k) == target, independent of M_tilde(k)/truncation). A TOUCHING
+    # (non-isolated) truncated band is the EXPECTED outcome for a topological
+    # CLS flat band and is accepted on that analytic guarantee; isolation only
+    # lets the (otherwise-unreliable) FHS Chern additionally confirm it. See
     # _phase5_success / Note A Sec.8.
     analytic_match = (analytic.get("C") == target_C)
     trunc_singular = not bool(iso_trunc.get("isolated"))
@@ -550,7 +474,11 @@ def design_flat_band(lattice_spec: LatticeSpec, target: DesignTarget,
         "feedback_success": feedback_success,
         "flat_band_max_dev": flat_dev,
         "exact_flat": exact_flat,
-        "local_exact": local_exact,
+        "alpha": alpha,
+        "dispersive_shape": dispersive_shape,
+        "dispersive_strength": dispersive_strength,
+        "dispersive_gap_below": iso_trunc.get("gap_below"),
+        "dispersive_gap_above": iso_trunc.get("gap_above"),
         "r_max": r_max,
         "r_max_applied": r_max_applied,
         "natural_hopping_range": natural_range,
@@ -595,6 +523,6 @@ def design_flat_band(lattice_spec: LatticeSpec, target: DesignTarget,
 
     return DesignResult(
         lattice_spec=lattice_spec, target=target, cls_designs=cls_designs,
-        x_k=x_k, H_k=H_k, H_trunc=H_trunc, ift=ift,
+        x_k=x_k, H_full=H_full, H_trunc=H_trunc, ift=ift,
         verification=verification, log=log,
     )

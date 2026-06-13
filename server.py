@@ -235,6 +235,65 @@ def api_chern(payload: ChernPayload):
     )
     return JSONResponse(content=json.loads(result))
 
+
+class WilsonLoopPayload(BaseModel):
+    spec: Any
+    band_indices: list[int] | None = None
+    flat_band_index: int | None = None
+    n_x: int = 40
+    n_y: int = 40
+
+
+@app.post("/api/wilson_loop")
+def api_wilson_loop(payload: WilsonLoopPayload):
+    result = bridge.compute_wilson_loop_api(
+        json.dumps(payload.spec),
+        payload.band_indices,
+        payload.flat_band_index,
+        payload.n_x,
+        payload.n_y,
+    )
+    return JSONResponse(content=json.loads(result))
+
+
+class EntanglementSpectrumPayload(BaseModel):
+    spec: Any
+    band_indices: list[int] | None = None
+    flat_band_index: int | None = None
+    N_x: int = 40
+    n_y: int = 60
+
+
+@app.post("/api/entanglement_spectrum")
+def api_entanglement_spectrum(payload: EntanglementSpectrumPayload):
+    result = bridge.compute_entanglement_spectrum_api(
+        json.dumps(payload.spec),
+        payload.band_indices,
+        payload.flat_band_index,
+        payload.N_x,
+        payload.n_y,
+    )
+    return JSONResponse(content=json.loads(result))
+
+
+class FuKanePayload(BaseModel):
+    spec: Any
+    band_indices: list[int] | None = None
+    flat_band_index: int | None = None
+    P_matrix_list: list[Any] | None = None
+
+
+@app.post("/api/fu_kane")
+def api_fu_kane(payload: FuKanePayload):
+    result = bridge.compute_fu_kane_api(
+        json.dumps(payload.spec),
+        payload.band_indices,
+        payload.flat_band_index,
+        payload.P_matrix_list,
+    )
+    return JSONResponse(content=json.loads(result))
+
+
 class FlatBandDesignPayload(BaseModel):
     lattice_spec: Any
     target: Any

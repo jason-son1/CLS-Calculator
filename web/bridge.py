@@ -732,6 +732,101 @@ def compute_chern(spec_json, band_index=None, grid_n=24, scan_n=120):
         return json.dumps({"error": f"{type(e).__name__}: {e}",
                            "trace": traceback.format_exc()})
 
+
+def _resolve_band_indices(lattice, H_k, spec, band_indices=None, flat_band_index=None):
+    if band_indices is not None and len(band_indices) > 0:
+        return [int(x) for x in band_indices]
+    # Fallback to flat band detection
+    flat_tol = spec.get("options", {}).get("flat_tol", 1e-4)
+    grid = spec.get("options", {}).get("k_grid", [24, 24])
+    try:
+        from cls_finder.band.bands import detect_flat_bands
+        fbs = detect_flat_bands(H_k, lattice, grid, flat_tol)
+        if fbs:
+            uniq = []
+            seen = set()
+            for fb in fbs:
+                if fb["band_index"] not in seen:
+                    uniq.append(fb)
+                    seen.add(fb["band_index"])
+            fb = (next((f for f in uniq if f["band_index"] == flat_band_index), uniq[0])
+                  if flat_band_index is not None else uniq[0])
+            return [int(x) for x in fb["degenerate_indices"]]
+    except Exception:
+        pass
+    # Absolute fallback: just occupy the lowest band
+    return [0]
+
+
+def compute_wilson_loop_api(spec_json, band_indices=None, flat_band_index=None, n_x=40, n_y=40):
+    try:
+        from cls_finder.io.parser import parse_input
+        from cls_finder.topology.wilson_loop import compute_wilson_loop
+        spec = json.loads(spec_json)
+        lattice, H_k = parse_input(spec)
+        d = lattice.dimension
+        if d != 2:
+            return json.dumps({"error": "Wilson Loop 계산은 2D 격자 모델만 지원합니다."})
+        resolved_indices = _resolve_band_indices(lattice, H_k, spec, band_indices, flat_band_index)
+        out = compute_wilson_loop(H_k, lattice, resolved_indices, n_x=int(n_x), n_y=int(n_y))
+        out["band_indices"] = resolved_indices
+        return json.dumps(out, default=_ser)
+    except Exception as e:
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()})
+
+
+def compute_entanglement_spectrum_api(spec_json, band_indices=None, flat_band_index=None, N_x=40, n_y=60):
+    try:
+        from cls_finder.io.parser import parse_input
+        from cls_finder.topology.entangle_spec import compute_entanglement_spectrum
+        spec = json.loads(spec_json)
+        lattice, H_k = parse_input(spec)
+        d = lattice.dimension
+        if d != 2:
+            return json.dumps({"error": "Entanglement Spectrum 계산은 2D 격자 모델만 지원합니다."})
+        resolved_indices = _resolve_band_indices(lattice, H_k, spec, band_indices, flat_band_index)
+        out = compute_entanglement_spectrum(H_k, lattice, resolved_indices, N_x=int(N_x), n_y=int(n_y))
+        out["band_indices"] = resolved_indices
+        return json.dumps(out, default=_ser)
+    except Exception as e:
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()})
+
+
+def compute_fu_kane_api(spec_json, band_indices=None, flat_band_index=None, P_matrix_list=None):
+    try:
+        from cls_finder.io.parser import parse_input
+        from cls_finder.topology.fu_kane import compute_fu_kane
+        spec = json.loads(spec_json)
+        lattice, H_k = parse_input(spec)
+        d = lattice.dimension
+        if d != 2:
+            return json.dumps({"error": "Fu-Kane Formula 계산은 2D 격자 모델만 지원합니다."})
+        resolved_indices = _resolve_band_indices(lattice, H_k, spec, band_indices, flat_band_index)
+        
+        Q = H_k.rows
+        P_matrix = None
+        if P_matrix_list is not None:
+            arr = np.array(P_matrix_list, dtype=complex)
+            if arr.ndim == 1:
+                if len(arr) == Q:
+                    P_matrix = np.diag(arr)
+                else:
+                    return json.dumps({"error": f"제공된 Parity 대각 성분의 개수({len(arr)})가 오비탈 개수({Q})와 일치하지 않습니다."})
+            elif arr.ndim == 2:
+                if arr.shape == (Q, Q):
+                    P_matrix = arr
+                else:
+                    return json.dumps({"error": f"제공된 Parity 행렬 크기 {arr.shape}가 {Q}x{Q}와 일치하지 않습니다."})
+        else:
+            P_matrix = np.eye(Q, dtype=complex)
+            
+        out = compute_fu_kane(H_k, lattice, resolved_indices, P_matrix=P_matrix)
+        out["band_indices"] = resolved_indices
+        return json.dumps(out, default=_ser)
+    except Exception as e:
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()})
+
+
 # ─── Public: quick band structure preview ────────────────────────────────────
 def get_band_data(spec_json):
     try:
@@ -1525,9 +1620,9 @@ def get_nanoribbon_state(spec_json, Nx, ky, band_idx, periodic_dir="y"):
         return json.dumps({"error": str(e), "traceback": traceback.format_exc()})
 
 
-def design_flat_band(lattice_spec_json, target_json, E0=0.0, t=0.3, delta=0.5,
-                     n_grid_ift=24, R_cut=3, max_retries=8, max_rcut_retries=4,
-                     r_max=None, cls_size=None):
+def design_flat_band(lattice_spec_json, target_json, E0=0.0, alpha=1.0,
+                     dispersive_shape="nn_real", dispersive_strength=0.3,
+                     max_retries=8, r_max=None, cls_size=None):
     try:
         from cls_finder.engineer import (
             LatticeSpec,
@@ -1565,12 +1660,10 @@ def design_flat_band(lattice_spec_json, target_json, E0=0.0, t=0.3, delta=0.5,
             lattice_spec=lattice_spec,
             target=target,
             E0=float(E0),
-            t=float(t),
-            delta=float(delta),
-            n_grid_ift=int(n_grid_ift),
-            R_cut=int(R_cut),
+            alpha=float(alpha),
+            dispersive_shape=str(dispersive_shape),
+            dispersive_strength=float(dispersive_strength),
             max_retries=int(max_retries),
-            max_rcut_retries=int(max_rcut_retries),
             r_max=(None if r_max in (None, "", "none") else int(r_max)),
             cls_size=(None if cls_size in (None, "", "none", 0) else int(cls_size)),
             verbose=False
@@ -1691,11 +1784,13 @@ def _engineer_parse_lattice_spec(lattice_spec_data):
     return LatticeSpec(primitive_vectors=prim_vecs, sublattices=sublattices), prim_vecs, sublattices
 
 
-def analyze_manual_cls(lattice_spec_json, cls_sites_json, E0=0.0, t=0.3, delta=0.5,
-                        n_grid_ift=24, R_cut=3, max_rcut_retries=4):
+def analyze_manual_cls(lattice_spec_json, cls_sites_json, E0=0.0, alpha=1.0,
+                        dispersive_shape="nn_real", dispersive_strength=0.3,
+                        r_max=None):
     """Manual real-space CLS placement (cls_finder.engineer.manual): build f(k)
-    directly from user-clicked sites, construct the always-flat (Eq.127) H(k),
-    auto-discover its topology (no pre-specified target), and produce truncated
+    directly from user-clicked sites, construct the always-exactly-flat
+    H(k) = E0 I + alpha*H_core(k) + H_core(k) M_tilde(k) H_core(k), auto-discover
+    its topology (no pre-specified target), and produce (optionally truncated)
     real-space hoppings -- same response shape as design_flat_band, plus
     valid/trivial/warnings/zeros/chern_report."""
     try:
@@ -1712,8 +1807,10 @@ def analyze_manual_cls(lattice_spec_json, cls_sites_json, E0=0.0, t=0.3, delta=0
         ]
 
         res = run_manual(
-            lattice_spec, cls_sites, E0=float(E0), t=float(t), delta=float(delta),
-            n_grid_ift=int(n_grid_ift), R_cut=int(R_cut), max_rcut_retries=int(max_rcut_retries),
+            lattice_spec, cls_sites, E0=float(E0), alpha=float(alpha),
+            dispersive_shape=str(dispersive_shape),
+            dispersive_strength=float(dispersive_strength),
+            r_max=(None if r_max in (None, "", "none") else int(r_max)),
         )
 
         orbitals_json = _engineer_orbitals_json(prim_vecs, sublattices)
@@ -1731,11 +1828,18 @@ def analyze_manual_cls(lattice_spec_json, cls_sites_json, E0=0.0, t=0.3, delta=0
 
         ift = res["ift"]
         verification = {
-            "R_cut": res["R_cut"],
+            "max_hopping_range": res["max_hopping_range"],
+            "natural_hopping_range": res["natural_hopping_range"],
             "truncation_ratio": ift.get("truncation_ratio"),
             "trunc_isolated": res["iso_trunc"].get("isolated"),
             "trunc_numerical_C": res["num_trunc"].get("C"),
             "analytic_C": res["chern_report"]["chern_number"],
+            "flat_band_max_dev": res["flat_band_max_dev"],
+            "exact_flat": res["exact_flat"],
+            "r_max": res["r_max"],
+            "r_max_applied": res["r_max_applied"],
+            "dispersive_gap_below": res["iso_trunc"].get("gap_below"),
+            "dispersive_gap_above": res["iso_trunc"].get("gap_above"),
         }
 
         return json.dumps({
@@ -1763,15 +1867,15 @@ def analyze_manual_cls(lattice_spec_json, cls_sites_json, E0=0.0, t=0.3, delta=0
 
 
 def design_flat_band_explore_stream(lattice_spec_json, target_json, E0=0.0,
-                                     mk_variants_json=None, offsets_json=None,
-                                     rcut_variants_json=None, n_grid_ift=24,
-                                     max_retries=2, max_rcut_retries=3, max_candidates=24,
+                                     dispersive_variants_json=None, offsets_json=None,
+                                     rcut_variants_json=None,
+                                     max_retries=2, max_candidates=24,
                                      cls_sizes_json=None):
     """Multi-candidate flat-band design explorer (cls_finder.engineer.explore):
-    streams one NDJSON {"type":"progress",...} message per (shell_offset0, t,
-    delta, R_cut0) attempt as it completes, then a final {"type":"done",
-    "ranked":[index,...]} giving the deduplicated, best-first ordering of the
-    streamed candidate indices."""
+    streams one NDJSON {"type":"progress",...} message per (shell_offset0,
+    dispersive_shape, dispersive_strength, alpha, R_cut0) attempt as it
+    completes, then a final {"type":"done", "ranked":[index,...]} giving the
+    deduplicated, best-first ordering of the streamed candidate indices."""
     from cls_finder.engineer import (
         SingularityTarget, DesignTarget, iter_design_attempts, dedupe_and_rank,
     )
@@ -1792,8 +1896,11 @@ def design_flat_band_explore_stream(lattice_spec_json, target_json, E0=0.0,
         target = DesignTarget(C=int(target_data["C"]), singularities=singularities)
 
         offsets = [int(x) for x in json.loads(offsets_json)] if offsets_json else list(range(8))
-        mk_variants = ([tuple(float(v) for v in pair) for pair in json.loads(mk_variants_json)]
-                       if mk_variants_json else [(0.3, 0.5), (0.5, 0.3), (0.2, 0.8)])
+        dispersive_variants = (
+            [(str(v[0]), float(v[1]), float(v[2])) for v in json.loads(dispersive_variants_json)]
+            if dispersive_variants_json else
+            [("nn_real", 0.3, 1.0), ("haldane", 0.3, 1.0), ("combo", 0.25, 1.0), ("none", 0.0, 1.0)]
+        )
         rcut_variants = [int(x) for x in json.loads(rcut_variants_json)] if rcut_variants_json else [3]
         # CLS size variants: None (or 0) = auto/minimal shells; a positive int
         # requests a CLS of that spatial extent.

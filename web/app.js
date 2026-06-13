@@ -6026,6 +6026,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Nanoribbon Analysis run button listener
   document.getElementById('ribbon-run-btn')?.addEventListener('click', runNanoribbonAnalysis);
   document.getElementById('rbm-run-btn')?.addEventListener('click', runRBMAnalysis);
+  document.getElementById('topo-run-btn')?.addEventListener('click', runGlobalTopologyAnalysis);
+  document.getElementById('topo-fukane-btn')?.addEventListener('click', () => runFuKaneAnalysis());
 
   // Nanoribbon Periodic direction change listener
   document.getElementById('ribbon-pdir')?.addEventListener('change', e => {
@@ -8355,6 +8357,244 @@ function loadDesignedModel() {
   // 보이도록 H(k) 행렬 미리보기를 즉시 큰 모달로 표시한다.
   openHamiltonianMatrixModal();
 }
+
+
+async function runGlobalTopologyAnalysis() {
+  const spec = buildSpec();
+  const loading = document.getElementById('topo-loading');
+  if (loading) loading.classList.remove('hidden');
+
+  // Parse occupied bands
+  const bandsStr = document.getElementById('topo-bands-input').value.trim();
+  let bandIndices = null;
+  if (bandsStr) {
+    bandIndices = bandsStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+  }
+
+  const Nx = parseInt(document.getElementById('topo-nx').value) || 40;
+  const Ny = parseInt(document.getElementById('topo-ny').value) || 40;
+  const cylNx = parseInt(document.getElementById('topo-cyl-nx').value) || 40;
+
+  try {
+    // 1. Run Wilson Loop / WCC Flow
+    const wccRes = await fetch('/api/wilson_loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spec: spec,
+        band_indices: bandIndices,
+        n_x: Nx,
+        n_y: Ny
+      })
+    });
+    const wccData = await wccRes.json();
+    if (wccData.error) {
+      alert(`Wilson Loop 에러: ${wccData.error}`);
+      if (loading) loading.classList.add('hidden');
+      return;
+    }
+
+    plotWCCFlow(wccData);
+
+    // 2. Run Cylinder Entanglement Spectrum
+    const esRes = await fetch('/api/entanglement_spectrum', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spec: spec,
+        band_indices: bandIndices,
+        N_x: cylNx,
+        n_y: 60
+      })
+    });
+    const esData = await esRes.json();
+    if (esData.error) {
+      alert(`Entanglement Spectrum 에러: ${esData.error}`);
+      if (loading) loading.classList.add('hidden');
+      return;
+    }
+
+    plotEntanglementSpectrum(esData);
+
+    // 3. Run Fu-Kane Symmetry Indicators
+    await runFuKaneAnalysis(bandIndices);
+
+  } catch (err) {
+    alert(`계산 중 오류가 발생했습니다: ${err}`);
+  } finally {
+    if (loading) loading.classList.add('hidden');
+  }
+}
+
+function plotWCCFlow(data) {
+  const container = document.getElementById('topo-wcc-plot');
+  if (!container) return;
+
+  const traces = [];
+  const k_y = data.k_y;
+  const tracks = data.tracks;
+
+  tracks.forEach((track, tid) => {
+    // Add null values at wrapping points to prevent draw lines crossing vertically
+    const x_plot = [];
+    const y_plot = [];
+    for (let i = 0; i < k_y.length; i++) {
+      x_plot.push(k_y[i]);
+      y_plot.push(track[i]);
+      if (i < k_y.length - 1 && Math.abs(track[i+1] - track[i]) > 0.45) {
+        x_plot.push(null);
+        y_plot.push(null);
+      }
+    }
+
+    traces.push({
+      x: x_plot,
+      y: y_plot,
+      mode: 'lines+markers',
+      name: `WCC Track ${tid + 1}`,
+      line: { width: 2 },
+      marker: { size: 4 }
+    });
+  });
+
+  const layout = {
+    title: { text: 'Wannier Charge Center (WCC) Flow vs k_y', font: { size: 14 } },
+    xaxis: { title: 'k_y' },
+    yaxis: { title: 'WCC ν (mod 1)', range: [-0.51, 0.51] },
+    margin: { l: 50, r: 20, t: 40, b: 40 },
+    hovermode: 'closest',
+    plot_bgcolor: '#f8fafc',
+    paper_bgcolor: 'white'
+  };
+
+  Plotly.newPlot(container, traces, layout, { responsive: true });
+
+  // Update text result
+  const resDiv = document.getElementById('topo-wcc-result');
+  if (resDiv) {
+    let html = `점유 밴드: [${data.band_indices.join(', ')}] | `;
+    html += `FHS Chern 수 합계: <strong>C = ${data.chern}</strong> | `;
+    html += `Z2 Invariant: <strong>Z2 = ${data.z2}</strong>`;
+    resDiv.innerHTML = html;
+  }
+}
+
+function plotEntanglementSpectrum(data) {
+  const container = document.getElementById('topo-es-plot');
+  if (!container) return;
+
+  const traces = [];
+  const k_y = data.k_y;
+  const spectrum = data.spectrum;
+  const dim_A = spectrum[0].length;
+
+  for (let m = 0; m < dim_A; m++) {
+    const x_plot = [];
+    const y_plot = [];
+    for (let j = 0; j < k_y.length; j++) {
+      x_plot.push(k_y[j]);
+      y_plot.push(spectrum[j][m]);
+    }
+
+    traces.push({
+      x: x_plot,
+      y: y_plot,
+      mode: 'lines',
+      line: { color: 'rgba(99, 102, 241, 0.6)', width: 1.5 },
+      showlegend: false
+    });
+  }
+
+  const layout = {
+    title: { text: 'Cylinder Entanglement Spectrum ε_m(k_y)', font: { size: 14 } },
+    xaxis: { title: 'k_y' },
+    yaxis: { title: 'Entanglement Energy ε' },
+    margin: { l: 50, r: 20, t: 40, b: 40 },
+    hovermode: 'closest',
+    plot_bgcolor: '#f8fafc',
+    paper_bgcolor: 'white'
+  };
+
+  Plotly.newPlot(container, traces, layout, { responsive: true });
+
+  // Update text result
+  const resDiv = document.getElementById('topo-es-result');
+  if (resDiv) {
+    resDiv.innerHTML = `Region A 차원: ${dim_A} | ε = 0 부근의 Edge Mode 존재 여부를 차트에서 확인하세요.`;
+  }
+}
+
+async function runFuKaneAnalysis(bandIndices = null) {
+  const spec = buildSpec();
+  const resDiv = document.getElementById('topo-fukane-result');
+  if (!resDiv) return;
+
+  if (!bandIndices) {
+    const bandsStr = document.getElementById('topo-bands-input').value.trim();
+    if (bandsStr) {
+      bandIndices = bandsStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+    }
+  }
+
+  // Parse parity matrix diagonals
+  const parityStr = document.getElementById('topo-parity-input').value.trim();
+  let parityList = null;
+  if (parityStr) {
+    parityList = parityStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+  }
+
+  try {
+    const res = await fetch('/api/fu_kane', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spec: spec,
+        band_indices: bandIndices,
+        P_matrix_list: parityList
+      })
+    });
+    const data = await res.json();
+    
+    if (data.error) {
+      resDiv.innerHTML = `<span style="color: #b91c1c;">⚠️ Fu-Kane 에러: ${data.error}</span>`;
+      return;
+    }
+
+    let html = '';
+    if (!data.symmetric) {
+      html += `<div style="color: #b91c1c; font-weight: bold; margin-bottom: 8px;">⚠️ 공간 반전 대칭 깨짐!</div>`;
+      html += `TRIM 지점에서 해밀토니안과 Parity 연산자가 교환하지 않습니다 ([H(k), P] ≠ 0).<br>`;
+      html += `교환 오류 norms: ` + Object.entries(data.comm_errors).map(([k, v]) => `${k}:${v.toFixed(4)}`).join(', ') + `<br>`;
+      html += `<strong>안내:</strong> 대칭성이 깨져 Fu-Kane 공식을 신뢰할 수 없습니다. 위의 Wilson Loop 결과를 확인해 주세요.`;
+      resDiv.style.background = '#fef2f2';
+      resDiv.style.borderColor = '#fca5a5';
+      resDiv.style.color = '#991b1b';
+    } else {
+      html += `<div style="font-weight: bold; color: #1e1b4b; margin-bottom: 8px;">✅ 공간 반전 대칭성 검증 통과 ([H(k), P] = 0)</div>`;
+      html += `<table style="width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 0.78rem;">`;
+      html += `<tr style="border-bottom: 1px solid #ddd; font-weight: bold;"><th style="text-align: left; padding: 4px;">TRIM 지점</th><th style="text-align: left; padding: 4px;">Parity 고유값 목록</th><th style="text-align: left; padding: 4px;">곱 (δ_i)</th></tr>`;
+      data.parity_details.forEach(det => {
+        html += `<tr style="border-bottom: 1px solid #eee;">`;
+        html += `<td style="padding: 4px; font-weight: bold;">${det.point}</td>`;
+        html += `<td style="padding: 4px; font-family: monospace;">[${det.parity_vals.join(', ')}]</td>`;
+        html += `<td style="padding: 4px; font-weight: bold; color: ${det.product == -1 ? '#dc2626' : '#2563eb'}">${det.product == -1 ? '-' : '+'}${Math.abs(det.product)}</td>`;
+        html += `</tr>`;
+      });
+      html += `</table>`;
+      html += `전체 TRIM Parity 곱 합계: <strong>${data.z2 === 1 ? '-1' : '+1'}</strong><br>`;
+      html += `Fu-Kane 공식으로 도출된 <strong>Z2 invariant: ${data.z2}</strong> `;
+      html += `(${data.z2 === 1 ? '<span style="color: #b91c1c; font-weight:bold;">Topological (Non-trivial)</span>' : '<span style="color: #475569; font-weight:bold;">Trivial</span>'})`;
+      resDiv.style.background = '#fef8ff';
+      resDiv.style.borderColor = '#e9d5ff';
+      resDiv.style.color = '#581c87';
+    }
+    resDiv.innerHTML = html;
+
+  } catch (err) {
+    resDiv.innerHTML = `<span style="color: #b91c1c;">⚠️ 계산 중 오류가 발생했습니다: ${err}</span>`;
+  }
+}
+
 
 
 

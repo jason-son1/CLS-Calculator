@@ -2,13 +2,15 @@
 Module 7 -- Multi-Candidate Design Explorer.
 
 CLS / flat-band-eigenvector solutions realizing a given (C, w_i) target are
-NOT unique: pipeline.design_flat_band() picks ONE (shell-offset, M(k), R_cut)
-combination and stops at the first design whose Phase3/4 and Phase5 feedback
-loops succeed. This module instead runs the existing, UNMODIFIED
-``design_flat_band`` for MANY (shell_offset0, (t, delta), R_cut0) combinations,
-collects every result (successes AND failures -- the latter reported as
-`error` rather than raised), scores and ranks them, and removes near-duplicate
-hopping tables -- giving the user a choice among many valid designs.
+NOT unique: pipeline.design_flat_band() picks ONE (shell-offset,
+dispersive_shape/dispersive_strength/alpha, r_max) combination and stops at
+the first design whose Phase3/4 and Phase5 feedback loops succeed. This module
+instead runs the existing, UNMODIFIED ``design_flat_band`` for MANY
+(shell_offset0, (dispersive_shape, dispersive_strength, alpha), R_cut0)
+combinations, collects every result (successes AND failures -- the latter
+reported as `error` rather than raised), scores and ranks them, and removes
+near-duplicate hopping tables -- giving the user a choice among many valid
+designs.
 
 ``iter_design_attempts`` is a generator yielding each attempt's
 ``DesignCandidate`` as soon as it is computed (for incremental progress
@@ -34,19 +36,23 @@ from cls_finder.engineer.spec import LatticeSpec, DesignTarget, validate_design
 from cls_finder.engineer.pipeline import DesignResult, design_flat_band
 
 DEFAULT_OFFSETS: Sequence[int] = range(8)
-DEFAULT_MK_VARIANTS: Sequence[Tuple[float, float]] = ((0.3, 0.5), (0.5, 0.3), (0.2, 0.8))
+DEFAULT_DISPERSIVE_VARIANTS: Sequence[Tuple[str, float, float]] = (
+    ("nn_real", 0.3, 1.0), ("haldane", 0.3, 1.0),
+    ("combo", 0.25, 1.0), ("none", 0.0, 1.0),
+)
 DEFAULT_R_CUT0_VARIANTS: Sequence[int] = (3,)
 DEFAULT_CLS_SIZES: Sequence[Optional[int]] = (None,)
 
 
 @dataclass
 class DesignCandidate:
-    """One (shell_offset0, t, delta, R_cut0, cls_size) trial of
-    design_flat_band()."""
+    """One (shell_offset0, dispersive_shape, dispersive_strength, alpha,
+    R_cut0, cls_size) trial of design_flat_band()."""
     index: int
     offset: int
-    t: float
-    delta: float
+    dispersive_shape: str
+    dispersive_strength: float
+    alpha: float
     R_cut0: int
     score: float
     cls_size: Optional[int] = None
@@ -76,7 +82,12 @@ def _score(verification: Dict) -> float:
       2. phase5_success (truncated deliverable realises it),
       3. per-singularity feedback consistency,
       4. low truncation weight dropped,
-      5. isolation only as a small tiebreak (lets FHS additionally confirm).
+      5. isolation as a small tiebreak (lets FHS additionally confirm),
+      6. a well-gapped dispersive sector as a final tiebreak -- since
+         analytic_match/phase5_success/exact_flat are IDENTICAL across
+         dispersive variants of the SAME CLS design by construction
+         (Hamiltonian Engineering note Sec.3), this is what actually
+         distinguishes "good" dispersive dressings from each other.
     """
     score = 0.0
     if verification.get("analytic_match") or \
@@ -91,17 +102,19 @@ def _score(verification: Dict) -> float:
         score += 5.0 * (1.0 - ratio)
     if verification.get("trunc_isolated"):
         score += 5.0
+    score += 2.0 * min(1.0, min(verification.get("dispersive_gap_below") or 0,
+                                 verification.get("dispersive_gap_above") or 0))
     return score
 
 
-def _combos(offsets: Sequence[int], mk_variants: Sequence[Tuple[float, float]],
+def _combos(offsets: Sequence[int], dispersive_variants: Sequence[Tuple[str, float, float]],
             R_cut0_variants: Sequence[int], cls_sizes: Sequence[Optional[int]],
             max_candidates: int
-            ) -> List[Tuple[int, float, float, int, Optional[int]]]:
-    combos = [(offset, t, delta, R_cut0, cls_size)
+            ) -> List[Tuple[int, str, float, float, int, Optional[int]]]:
+    combos = [(offset, dispersive_shape, dispersive_strength, alpha, R_cut0, cls_size)
               for cls_size in cls_sizes
               for offset in offsets
-              for (t, delta) in mk_variants
+              for (dispersive_shape, dispersive_strength, alpha) in dispersive_variants
               for R_cut0 in R_cut0_variants]
     return combos[:max_candidates]
 
@@ -109,15 +122,15 @@ def _combos(offsets: Sequence[int], mk_variants: Sequence[Tuple[float, float]],
 def iter_design_attempts(lattice_spec: LatticeSpec, target: DesignTarget,
                          E0: float = 0.0,
                          offsets: Sequence[int] = DEFAULT_OFFSETS,
-                         mk_variants: Sequence[Tuple[float, float]] = DEFAULT_MK_VARIANTS,
+                         dispersive_variants: Sequence[Tuple[str, float, float]] = DEFAULT_DISPERSIVE_VARIANTS,
                          R_cut0_variants: Sequence[int] = DEFAULT_R_CUT0_VARIANTS,
                          cls_sizes: Sequence[Optional[int]] = DEFAULT_CLS_SIZES,
-                         n_grid_ift: int = 24, max_retries: int = 2,
-                         max_rcut_retries: int = 3, max_candidates: int = 48
+                         max_retries: int = 2, max_candidates: int = 48
                          ) -> Iterator[Tuple[DesignCandidate, int, int]]:
     """Generator: yields ``(candidate, index, total)`` for each
-    (shell_offset0, t, delta, R_cut0) combination, one
-    ``design_flat_band`` call at a time, BEFORE deduplication/ranking.
+    (shell_offset0, dispersive_shape, dispersive_strength, alpha, R_cut0)
+    combination, one ``design_flat_band`` call at a time, BEFORE
+    deduplication/ranking.
 
     Use this directly for incremental progress streaming; use
     ``explore_designs`` (or ``dedupe_and_rank`` on the collected attempts)
@@ -130,23 +143,27 @@ def iter_design_attempts(lattice_spec: LatticeSpec, target: DesignTarget,
             "(see design_flat_band)"
         )
 
-    combos = _combos(offsets, mk_variants, R_cut0_variants, cls_sizes, max_candidates)
+    combos = _combos(offsets, dispersive_variants, R_cut0_variants, cls_sizes, max_candidates)
     total = len(combos)
-    for idx, (offset, t, delta, R_cut0, cls_size) in enumerate(combos):
-        # In local_exact mode the R_cut0 axis is the hopping-range CAP r_max
-        # (0 / non-positive = no cap = the natural exactly-flat range).
+    for idx, (offset, dispersive_shape, dispersive_strength, alpha, R_cut0, cls_size) in enumerate(combos):
+        # The R_cut0 axis is the hopping-range CAP r_max (0/non-positive = no
+        # cap = the natural exactly-flat range set by the CLS geometry and
+        # (alpha, dispersive_shape, dispersive_strength)).
         r_max = R_cut0 if (R_cut0 and R_cut0 > 0) else None
         try:
             result = design_flat_band(
-                lattice_spec, target, E0=E0, t=t, delta=delta,
-                n_grid_ift=n_grid_ift, r_max=r_max, cls_size=cls_size,
-                max_retries=max_retries, max_rcut_retries=max_rcut_retries,
+                lattice_spec, target, E0=E0, alpha=alpha,
+                dispersive_shape=dispersive_shape,
+                dispersive_strength=dispersive_strength,
+                r_max=r_max, cls_size=cls_size,
+                max_retries=max_retries,
                 shell_offset0=offset, verbose=False)
-            cand = DesignCandidate(idx, offset, t, delta, R_cut0,
-                                   _score(result.verification),
+            cand = DesignCandidate(idx, offset, dispersive_shape, dispersive_strength,
+                                   alpha, R_cut0, _score(result.verification),
                                    cls_size=cls_size, result=result)
         except Exception as e:
-            cand = DesignCandidate(idx, offset, t, delta, R_cut0, -1000.0,
+            cand = DesignCandidate(idx, offset, dispersive_shape, dispersive_strength,
+                                   alpha, R_cut0, -1000.0,
                                    cls_size=cls_size,
                                    error=f"{type(e).__name__}: {e}")
         yield cand, idx, total
@@ -174,14 +191,13 @@ def dedupe_and_rank(attempts: List[DesignCandidate]) -> List[DesignCandidate]:
 def explore_designs(lattice_spec: LatticeSpec, target: DesignTarget,
                     E0: float = 0.0,
                     offsets: Sequence[int] = DEFAULT_OFFSETS,
-                    mk_variants: Sequence[Tuple[float, float]] = DEFAULT_MK_VARIANTS,
+                    dispersive_variants: Sequence[Tuple[str, float, float]] = DEFAULT_DISPERSIVE_VARIANTS,
                     R_cut0_variants: Sequence[int] = DEFAULT_R_CUT0_VARIANTS,
                     cls_sizes: Sequence[Optional[int]] = DEFAULT_CLS_SIZES,
-                    n_grid_ift: int = 24, max_retries: int = 2,
-                    max_rcut_retries: int = 3, max_candidates: int = 48,
+                    max_retries: int = 2, max_candidates: int = 48,
                     progress_cb: Optional[Callable[[DesignCandidate, int, int], None]] = None
                     ) -> List[DesignCandidate]:
-    """Enumerate offsets x mk_variants x R_cut0_variants (capped at
+    """Enumerate offsets x dispersive_variants x R_cut0_variants (capped at
     max_candidates attempts), run design_flat_band() for each, score,
     deduplicate by hopping-table signature (keeping the best-scoring
     representative), and return candidates ranked best-first.
@@ -193,9 +209,9 @@ def explore_designs(lattice_spec: LatticeSpec, target: DesignTarget,
     attempts: List[DesignCandidate] = []
     for cand, idx, total in iter_design_attempts(
             lattice_spec, target, E0=E0, offsets=offsets,
-            mk_variants=mk_variants, R_cut0_variants=R_cut0_variants,
-            cls_sizes=cls_sizes, n_grid_ift=n_grid_ift, max_retries=max_retries,
-            max_rcut_retries=max_rcut_retries, max_candidates=max_candidates):
+            dispersive_variants=dispersive_variants, R_cut0_variants=R_cut0_variants,
+            cls_sizes=cls_sizes, max_retries=max_retries,
+            max_candidates=max_candidates):
         attempts.append(cand)
         if progress_cb is not None:
             progress_cb(cand, idx, total)
